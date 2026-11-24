@@ -393,8 +393,30 @@ impl HostHeap {
             let host = crate::shadow::find(address, len.max(1)).map(|s| s.gpu(address));
             text.push_str(&format!(" title {address:#x}+{len:#x} host {host:#x?}"));
         }
+        // The host resource the slot views, so a draw reported in a
+        // device-removed report says what a shader actually samples
+        // (size and format), not only the view's words.
+        let kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+        text.push_str(&host_slot_text(
+            kept.get(index as usize).and_then(|r| r.as_ref()),
+        ));
         Some(text)
     }
+}
+
+/// The host resource behind a heap slot, in a few words (diagnostics):
+/// its size, format and mip count, or that the slot holds none.
+#[cfg(feature = "diagnostics")]
+fn host_slot_text(resource: Option<&ID3D12Resource>) -> String {
+    let Some(resource) = resource else {
+        return " host none".to_string();
+    };
+    // SAFETY: a live resource the slot holds.
+    let d = unsafe { resource.GetDesc() };
+    format!(
+        " host {}x{} f{} mips {}",
+        d.Width, d.Height, d.Format.0, d.MipLevels
+    )
 }
 
 /// Logs `what` the first time it happens.
@@ -922,6 +944,59 @@ fn null_view(at: D3D12_CPU_DESCRIPTOR_HANDLE) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
+
+    /// A slot with no resource says so rather than naming a resource that
+    /// is not there.
+    #[test]
+    fn a_slot_without_a_resource_says_so() {
+        assert_eq!(host_slot_text(None), " host none");
+    }
+
+    /// A slot that views a texture names its size, format and mip count.
+    #[test]
+    fn a_slot_with_a_texture_names_its_size_and_format() {
+        let Some(host) = host() else {
+            return; // no host GPU
+        };
+        let desc = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Width: 64,
+            Height: 32,
+            DepthOrArraySize: 1,
+            MipLevels: 1,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            ..Default::default()
+        };
+        let heap = D3D12_HEAP_PROPERTIES {
+            Type: D3D12_HEAP_TYPE_DEFAULT,
+            ..Default::default()
+        };
+        let mut texture: Option<ID3D12Resource> = None;
+        // SAFETY: plain resource creation; the out pointer is ours.
+        let made = unsafe {
+            host.device.CreateCommittedResource(
+                &heap,
+                D3D12_HEAP_FLAG_NONE,
+                &desc,
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                &mut texture,
+            )
+        };
+        assert!(made.is_ok(), "{made:?}");
+        let texture = texture.expect("a committed texture");
+        // SAFETY: a live resource.
+        let d = unsafe { texture.GetDesc() };
+        assert_eq!(
+            host_slot_text(Some(&texture)),
+            format!(" host 64x32 f{} mips 1", d.Format.0)
+        );
+    }
 
     /// A null texture UAV keeps the title's dimension (3D for the world's
     /// wind field), and is 2D when the title names none.
