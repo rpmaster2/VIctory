@@ -814,6 +814,9 @@ impl State {
         let Some(p) = crate::pipeline::host_pipeline(self.pipeline as This) else {
             return vec!["no host pipeline".into()];
         };
+        let views = (self.heaps[0] != 0)
+            .then(|| crate::descriptor::heap(self.heaps[0] as This).host())
+            .flatten();
         let mut out = Vec::new();
         for stage in &p.stages {
             let t = stage.translated();
@@ -821,7 +824,14 @@ impl State {
                 let what = match (u.root, self.roots_ref(compute).get(usize::from(u.slot))) {
                     (RootType::Table, Some(Root::Table(table))) => {
                         let handle = table + u64::from(u.table_offset_dwords) * 4;
-                        describe(crate::descriptor::view(handle).as_ref())
+                        let mut what = describe(crate::descriptor::view(handle).as_ref());
+                        // What the host holds behind that slot, so a black-frame
+                        // line says whether a shader samples a resource at all
+                        // and of what size (diagnostics).
+                        if let Some(heap) = views {
+                            what.push_str(&heap.host_resource((handle / 32) as u32));
+                        }
+                        what
                     }
                     (root, _) => format!("{root:?}"),
                 };

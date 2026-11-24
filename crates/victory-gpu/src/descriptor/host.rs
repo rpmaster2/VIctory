@@ -402,6 +402,13 @@ impl HostHeap {
         ));
         Some(text)
     }
+
+    /// The host resource behind slot `index`, in a few words (diagnostics).
+    #[cfg(feature = "diagnostics")]
+    pub(crate) fn host_resource(&self, index: u32) -> String {
+        let kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+        host_slot_text(kept.get(index as usize).and_then(|r| r.as_ref()))
+    }
 }
 
 /// The host resource behind a heap slot, in a few words (diagnostics):
